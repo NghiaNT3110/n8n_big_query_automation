@@ -1,1 +1,2 @@
-# n8n_big_query_automation
+# Data Automation Pipeline for GA4 & BigQuery
+- 
