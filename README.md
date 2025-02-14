@@ -9,3 +9,6 @@
 - Demo Data Sources: 
 * bigquery-public-data.ga4_obfuscated_sample_ecommerce.events_*
 * firebase-public-project.analytics_153293282.events_*
+
+  ![image](https://github.com/user-attachments/assets/0424d3d1-3643-4cef-afc2-94166e4d969a)
+
