@@ -1,0 +1,951 @@
+{
+  "name": "Automate Big Query Data Pipeline - GA4",
+  "nodes": [
+    {
+      "parameters": {
+        "projectId": {
+          "__rl": true,
+          "value": "big-query-378507",
+          "mode": "list",
+          "cachedResultName": "Big Query",
+          "cachedResultUrl": "https://console.cloud.google.com/bigquery?project=big-query-378507"
+        },
+        "sqlQuery": "DROP TABLE IF EXISTS `big-query-378507.thelook_etl1.thelook_case_1_2`;\nCREATE OR REPLACE TABLE `big-query-378507.thelook_etl1.thelook_case_1_2`\nAS \nWITH order_details AS (\n  SELECT\n    DISTINCT inventory_item_id,  \n    orders.order_id,  \n    users.first_name ||\" \"|| users.last_name AS full_name,  \n    users.email,\n    users.age,\n    users.city,\n    users.state,\n    users.country,\n    order_items.status,\n    traffic_source, \n    sale_price,\n    inventory_items.cost,  \n    orders.num_of_item,  \n    inventory_items.cost * orders.num_of_item AS total_product_cost,  \n    orders.num_of_item * sale_price AS total_revenue_purchase,  \n    orders.num_of_item * (sale_price - inventory_items.cost) AS profit,  \n    inventory_items.product_category,\n    inventory_items.product_name,\n    inventory_items.product_department,\n    inventory_items.product_brand,\n\n    -- Chuyển TIMESTAMP thành DATE để Partition\n    DATE(order_items.created_at) AS created_date,\n    order_items.created_at,  -- Giữ nguyên dạng TIMESTAMP để truy vấn sau\n    order_items.shipped_at,\n    order_items.delivered_at,\n    order_items.returned_at,\n\n    -- Tổng số tiền bị hoàn\n    CASE\n      WHEN order_items.status LIKE '%Return%' OR order_items.status LIKE '%Cancel%' \n      THEN orders.num_of_item * sale_price\n      ELSE 0 \n    END AS total_return,\n\n    -- Thời gian giao hàng, xử lý đơn, hoàn trả\n    DATE_DIFF(order_items.delivered_at, order_items.shipped_at, DAY) AS delivery_time_in_days,\n    DATE_DIFF(order_items.shipped_at, order_items.created_at, DAY) AS process_time_in_days,\n    DATE_DIFF(order_items.returned_at, order_items.created_at, DAY) AS return_after_received_days,\n    \n    inventory_items.product_distribution_center_id\n  FROM big-query-378507.thelook_ecommerce.order_items  \n  LEFT JOIN big-query-378507.thelook_ecommerce.users \n    ON users.id = order_items.user_id  \n  LEFT JOIN big-query-378507.thelook_ecommerce.orders \n    ON orders.order_id = order_items.order_id  \n  LEFT JOIN big-query-378507.thelook_ecommerce.inventory_items \n    ON inventory_items.product_id = order_items.product_id  \n)\n\nSELECT\n  o.*,\n  d.name AS distribution_center_name\nFROM order_details o\nLEFT JOIN big-query-378507.thelook_ecommerce.distribution_centers d\n  ON d.id = o.product_distribution_center_id;\n",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleBigQuery",
+      "typeVersion": 2.1,
+      "position": [
+        -700,
+        -360
+      ],
+      "id": "6c65f5e4-a1a3-45d0-900d-18d0e3b112c5",
+      "name": "thelooker_dataset",
+      "alwaysOutputData": true,
+      "credentials": {
+        "googleBigQueryOAuth2Api": {
+          "id": "fl8GYthr4SpvTm7t",
+          "name": "Google BigQuery account - Nagato Yuki"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "projectId": {
+          "__rl": true,
+          "value": "flash-freehold-412006",
+          "mode": "list",
+          "cachedResultName": "My First Project",
+          "cachedResultUrl": "https://console.cloud.google.com/bigquery?project=flash-freehold-412006"
+        },
+        "sqlQuery": "DROP TABLE IF EXISTS `flash-freehold-412006.ga4_case_4_1.time_web`;\nCREATE OR REPLACE TABLE `flash-freehold-412006.ga4_case_4_1.time_web` AS \nWITH traffic AS (\nSELECT\n  event_date,\n  user_pseudo_id AS user_id,\n  (SELECT value.string_value\n    FROM\n      UNNEST (event_params)\n    WHERE\n      key='page_title'\n  ) as `Page_title`,\n  (SELECT value.string_value\n    FROM\n      UNNEST (event_params)\n    WHERE\n      key='page_location'\n  ) as `Page_location`,\n  (\n    SELECT\n      value.int_value\n    FROM\n      UNNEST (event_params)\n    WHERE\n      key='ga_session_id'\n  ) as `Session_id`,\n\n  /* Mark Engaged Session ID */ \n  CASE WHEN \n    (select value.string_value from unnest(event_params) where key = 'session_engaged') = '1' \n    THEN (select value.int_value from unnest(event_params) where key = 'ga_session_id')\n    ELSE NULL\n    END AS session_engaged_id,\n\n  traffic_source.source ||\"/\"|| traffic_source.medium AS traffic_name,\n  traffic_source.source AS traffic_source,\n  traffic_source.medium AS traffic_medium,\n  device.category AS device_category,\n  device.web_info.browser AS browser,\n  geo.country, geo.city,\n  event_name,\n  \n/* Mark Conversion Event is TRUE */ \n  CASE WHEN \n  event_name LIKE '%view_item'\n  OR event_name LIKE '%add_to_cart%'\n  OR event_name LIKE '%begin_check%'\n  OR event_name LIKE '%select_item%'\n  OR event_name LIKE '%add%'\n  OR event_name LIKE '%select_promo%'\n  OR event_name LIKE '%purchase%'\n  THEN 'TRUE'\n  ELSE 'FALSE' \n  END AS is_conversion, \n\n  CASE WHEN \n    event_name = 'purchase' THEN ecommerce.transaction_id \n    ELSE NULL \n    END AS transaction_ID,\n  COUNTIF(event_name ='page_view') AS page_view,\nFROM\n  `bigquery-public-data.ga4_obfuscated_sample_ecommerce.events_*`\nGROUP BY ALL \nORDER BY page_view DESC\n),\ntime_on_page AS (\n  select\n    event_date, \n    user_pseudo_id,\n    (SELECT value.string_value\n    FROM\n      UNNEST (event_params)\n    WHERE\n      key='page_location'\n  ) as `Page_location`,\n    (select value.int_value from unnest(event_params) where key = 'ga_session_id') as session_id,\n    sum((select value.int_value from unnest(event_params) where key = 'engagement_time_msec'))/1000 as time_on_page,\n     (max(event_timestamp)-min(event_timestamp))/1000000 as time_on_session\nfrom\n   `bigquery-public-data.ga4_obfuscated_sample_ecommerce.events_*`\ngroup by\n    event_date,\n    user_pseudo_id,\n    Page_location,\n    session_id\n)\nSELECT t.*, p.time_on_page, p.time_on_session, \nROUND(100 * COUNT(DISTINCT t.session_engaged_id) / COUNT(DISTINCT t.Session_id), 2) AS engagement_rate,\n100 - ROUND(100 * COUNT(DISTINCT t.session_engaged_id) / COUNT(DISTINCT t.Session_id), 2) AS bounce_rate\nFROM traffic t\nLEFT JOIN time_on_page p ON t.Session_id = p.session_id AND t.Page_location = p.Page_location AND t.event_date = p.event_date \nGROUP BY ALL\nORDER BY t.page_view DESC ",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleBigQuery",
+      "typeVersion": 2.1,
+      "position": [
+        -700,
+        -180
+      ],
+      "id": "d7b1ab01-5b39-467b-aa95-4b59c3852027",
+      "name": "time_web_GA4",
+      "alwaysOutputData": true,
+      "credentials": {
+        "googleBigQueryOAuth2Api": {
+          "id": "WoJJ5V0vEjiKQMfU",
+          "name": "Google BigQuery - mrsitson3110"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "projectId": {
+          "__rl": true,
+          "value": "flash-freehold-412006",
+          "mode": "list",
+          "cachedResultName": "My First Project",
+          "cachedResultUrl": "https://console.cloud.google.com/bigquery?project=flash-freehold-412006"
+        },
+        "sqlQuery": "DROP TABLE IF EXISTS `flash-freehold-412006.ga4_case_4_1.event`;\nCREATE OR REPLACE TABLE `flash-freehold-412006.ga4_case_4_1.event` AS\nSELECT\n  event_date,\n  user_pseudo_id AS user_id,\n  (\n    SELECT\n      value.int_value\n    FROM\n      UNNEST (event_params)\n    WHERE\n      key='ga_session_id'\n  ) as `Session_id`,\n  (SELECT value.string_value\n    FROM\n      UNNEST (event_params)\n    WHERE\n      key='page_title'\n  ) as `Page_title`,\n  (SELECT value.string_value\n    FROM\n      UNNEST (event_params)\n    WHERE\n      key='page_location'\n  ) as `Page_location`,\n  traffic_source.source ||\"/\"|| traffic_source.medium AS traffic_name,\n  traffic_source.source AS traffic_source,\n  traffic_source.medium AS traffic_medium,\n  device.category AS device_category,\n  device.web_info.browser AS browser,\n  geo.country, geo.city,\n  event_name,\n  CASE WHEN \n  event_name LIKE '%view_item'\n  OR event_name LIKE '%add_to_cart%'\n  OR event_name LIKE '%begin_check%'\n  OR event_name LIKE '%select_item%'\n  OR event_name LIKE '%add%'\n  OR event_name LIKE '%select_promo%'\n  OR event_name LIKE '%purchase%'\n  THEN 'TRUE'\n  ELSE 'FALSE' \n  END AS is_conversion,\n  FROM\n  `bigquery-public-data.ga4_obfuscated_sample_ecommerce.events_*`\n  ORDER BY event_date DESC",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleBigQuery",
+      "typeVersion": 2.1,
+      "position": [
+        -700,
+        0
+      ],
+      "id": "69062875-4d8e-4a05-8001-42afc60993ef",
+      "name": "event_GA4",
+      "credentials": {
+        "googleBigQueryOAuth2Api": {
+          "id": "WoJJ5V0vEjiKQMfU",
+          "name": "Google BigQuery - mrsitson3110"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "projectId": {
+          "__rl": true,
+          "value": "flash-freehold-412006",
+          "mode": "list",
+          "cachedResultName": "My First Project",
+          "cachedResultUrl": "https://console.cloud.google.com/bigquery?project=flash-freehold-412006"
+        },
+        "sqlQuery": "DROP TABLE IF EXISTS `flash-freehold-412006.ga4_case_4_1.purchase`;\nCREATE OR REPLACE TABLE `flash-freehold-412006.ga4_case_4_1.purchase` AS\nSELECT\n  event_date,\n  user_pseudo_id AS user_id,\n  traffic_source.source ||\"/\"|| traffic_source.medium AS traffic_name,\n  traffic_source.source AS traffic_source,\n  traffic_source.medium AS traffic_medium,\n  device.category AS device_category,\n  device.web_info.browser AS browser,\n  geo.country, geo.city,\n\n  /* Unnest page URL */ \n  (SELECT value.string_value\n    FROM\n      UNNEST (event_params)\n    WHERE\n      key='page_location'\n  ) as `Page_location`,\n\n  /* Get items field */ \n  items.item_name AS items_name,\n  items.item_brand AS items_brand,\n  items.price AS items_price,\n  items.quantity AS items_quantity,\n  items.item_category AS items_category,\n  \n /* Add Item revenue and Transaction ID when event name = purchase */  \n  CASE WHEN \n    event_name = 'purchase' THEN items.price * items.quantity \n  ELSE NULL \n  END AS items_revenue,\n\n  CASE WHEN \n    event_name = 'purchase' THEN ecommerce.transaction_id \n    ELSE NULL \n    END AS transaction_ID,\n    ecommerce.tax_value as tax_value \nFROM\n  `bigquery-public-data.ga4_obfuscated_sample_ecommerce.events_*`,\n/* Unnest items field and filter purchase event only */ \n  UNNEST (items) as items\n  WHERE event_name ='purchase'\nGROUP BY ALL \nORDER BY\n  items_revenue DESC",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleBigQuery",
+      "typeVersion": 2.1,
+      "position": [
+        -700,
+        180
+      ],
+      "id": "2744f161-6351-4b76-876c-0ab41a67390b",
+      "name": "purchase_GA4",
+      "credentials": {
+        "googleBigQueryOAuth2Api": {
+          "id": "WoJJ5V0vEjiKQMfU",
+          "name": "Google BigQuery - mrsitson3110"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "projectId": {
+          "__rl": true,
+          "value": "flash-freehold-412006",
+          "mode": "list",
+          "cachedResultName": "My First Project",
+          "cachedResultUrl": "https://console.cloud.google.com/bigquery?project=flash-freehold-412006"
+        },
+        "sqlQuery": "DROP TABLE IF EXISTS `flash-freehold-412006.ga4_case_4_1.cohort`;\nCREATE OR REPLACE TABLE `flash-freehold-412006.ga4_case_4_1.cohort` AS\nwith prep as (\nselect\n    /* Select User field */ \n    user_pseudo_id,\n    event_date,\n    event_name,\n    traffic_source.name AS traffic_name,\n    traffic_source.source AS traffic_source,\n    traffic_source.medium AS traffic_medium,\n    device.category AS device_category,\n    device.web_info.browser AS browser,\n    geo.country as country, \n    geo.city as city,\n\n    /* Select Session field */ \n    (select value.int_value from unnest(event_params) where key = 'ga_session_id') as session_id,\n    CASE WHEN \n    (select value.string_value from unnest(event_params) where key = 'session_engaged') = '1' \n    THEN (select value.int_value from unnest(event_params) where key = 'ga_session_id')\n    ELSE NULL\n    END AS session_engaged_id,\n    max((select value.int_value from unnest(event_params) where key = 'ga_session_number')) as session_number,\n    min(parse_date('%Y%m%d',event_date)) as session_date,\n    sum((select value.int_value from unnest(event_params) where key = 'engagement_time_msec')) as engagement_time_msec,\n    first_value(min(parse_date('%Y%m%d',event_date))) over (partition by user_pseudo_id order by min(event_date) rows between unbounded preceding and unbounded following) as first_session_date,\nfrom\n    `bigquery-public-data.ga4_obfuscated_sample_ecommerce.events_*`\ngroup by ALL )\n\nselect\n    distinct concat(extract(isoyear from first_session_date),'-',format('%02d',extract(isoweek from first_session_date))) as year_week,\n    concat('week ',date_diff(session_date,first_session_date,isoweek)) as retention_week,\n    user_pseudo_id as active_users,\n    session_engaged_id as engaged_session,\n    session_id as total_session, \n    event_name, traffic_name,traffic_source,traffic_medium,device_category,browser, country, city,event_date \nfrom\n    prep\ngroup by\n    ALL\norder by\n    year_week",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleBigQuery",
+      "typeVersion": 2.1,
+      "position": [
+        -700,
+        340
+      ],
+      "id": "2a5d52e3-7d07-4bc4-9c8e-d418a14cfd61",
+      "name": "cohort_GA4",
+      "credentials": {
+        "googleBigQueryOAuth2Api": {
+          "id": "WoJJ5V0vEjiKQMfU",
+          "name": "Google BigQuery - mrsitson3110"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "content": "## I'm a note \n- Đã done việc ủy quyền API cho n8n\n- Đã done các việc liên quan đến Input Query SQL vào n8n\n- Next step 1: Chạy thử Query xem có vấn đề gì không\n- Next step 2: Tạo 1 Query để update bảng vào Big Query\n- Next Step 3: Nghiên cứu đến việc đẩy Data từ Facebook Ads để xác định tệp User cũ, mới, tiềm năng sau đó đẩy lại vào Custom Audience\nNote: Nhớ thêm cả các Query liên quan đến Firebase vào đây",
+        "height": 320,
+        "width": 320
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -1360,
+        -20
+      ],
+      "id": "8b60b871-7794-4761-bc73-6853ee08d3c0",
+      "name": "Sticky Note"
+    },
+    {
+      "parameters": {
+        "content": "## Các vấn đề đang gặp phải:\n- Cần có hàm LIMIT ở chỗ query Data thì n8n mới chạy Node đó mà không bị lỗi\n- Nếu chèn thẳng lệnh create và bỏ limit => N8n không query lại đc data, nhưng Big Query thực thi bình thường => Check log Big Query đang có cảnh báo: Table must be partitioned and clustered to use CMETA.\n=> Đã sửa được bằng cách thêm lệnh DROP IF EXISTS xong chèn thêm CREATE vào",
+        "height": 320,
+        "width": 320
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -1360,
+        -400
+      ],
+      "id": "83c3f133-5945-4c7f-81ac-33a7fd3fb71f",
+      "name": "Sticky Note1"
+    },
+    {
+      "parameters": {
+        "projectId": {
+          "__rl": true,
+          "value": "big-query-378507",
+          "mode": "list",
+          "cachedResultName": "Big Query",
+          "cachedResultUrl": "https://console.cloud.google.com/bigquery?project=big-query-378507"
+        },
+        "sqlQuery": "SELECT COUNT(*)\nFROM `big-query-378507.thelook_etl1.thelook_case_1_2`\n",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleBigQuery",
+      "typeVersion": 2.1,
+      "position": [
+        -480,
+        -360
+      ],
+      "id": "2023723b-ddaf-4510-9914-8be41f78ea68",
+      "name": "Check record",
+      "alwaysOutputData": true,
+      "credentials": {
+        "googleBigQueryOAuth2Api": {
+          "id": "fl8GYthr4SpvTm7t",
+          "name": "Google BigQuery account - Nagato Yuki"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "projectId": {
+          "__rl": true,
+          "value": "flash-freehold-412006",
+          "mode": "list",
+          "cachedResultName": "My First Project",
+          "cachedResultUrl": "https://console.cloud.google.com/bigquery?project=flash-freehold-412006"
+        },
+        "sqlQuery": "SELECT COUNT(*)\nFROM `flash-freehold-412006.ga4_case_4_1.time_web`\n",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleBigQuery",
+      "typeVersion": 2.1,
+      "position": [
+        -480,
+        -180
+      ],
+      "id": "7befb093-8f8d-4544-93dc-4c41d3b81341",
+      "name": "Check record1",
+      "alwaysOutputData": true,
+      "credentials": {
+        "googleBigQueryOAuth2Api": {
+          "id": "WoJJ5V0vEjiKQMfU",
+          "name": "Google BigQuery - mrsitson3110"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "projectId": {
+          "__rl": true,
+          "value": "flash-freehold-412006",
+          "mode": "list",
+          "cachedResultName": "My First Project",
+          "cachedResultUrl": "https://console.cloud.google.com/bigquery?project=flash-freehold-412006"
+        },
+        "sqlQuery": "SELECT COUNT(*)\nFROM flash-freehold-412006.ga4_case_4_1.event",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleBigQuery",
+      "typeVersion": 2.1,
+      "position": [
+        -480,
+        0
+      ],
+      "id": "a6799521-0075-4dd8-bd8e-63cf1ef42ce1",
+      "name": "Check record2",
+      "alwaysOutputData": true,
+      "credentials": {
+        "googleBigQueryOAuth2Api": {
+          "id": "WoJJ5V0vEjiKQMfU",
+          "name": "Google BigQuery - mrsitson3110"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "projectId": {
+          "__rl": true,
+          "value": "flash-freehold-412006",
+          "mode": "list",
+          "cachedResultName": "My First Project",
+          "cachedResultUrl": "https://console.cloud.google.com/bigquery?project=flash-freehold-412006"
+        },
+        "sqlQuery": "SELECT COUNT(*)\nFROM flash-freehold-412006.ga4_case_4_1.purchase",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleBigQuery",
+      "typeVersion": 2.1,
+      "position": [
+        -480,
+        180
+      ],
+      "id": "8d0a6e3f-02f6-47c6-8f19-db0fc68bf4a7",
+      "name": "Check record3",
+      "alwaysOutputData": true,
+      "credentials": {
+        "googleBigQueryOAuth2Api": {
+          "id": "WoJJ5V0vEjiKQMfU",
+          "name": "Google BigQuery - mrsitson3110"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "projectId": {
+          "__rl": true,
+          "value": "flash-freehold-412006",
+          "mode": "list",
+          "cachedResultName": "My First Project",
+          "cachedResultUrl": "https://console.cloud.google.com/bigquery?project=flash-freehold-412006"
+        },
+        "sqlQuery": "SELECT COUNT(*)\nFROM flash-freehold-412006.ga4_case_4_1.cohort",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleBigQuery",
+      "typeVersion": 2.1,
+      "position": [
+        -480,
+        340
+      ],
+      "id": "855f5ee3-7ace-4265-b72f-cec6a3f63038",
+      "name": "Check record4",
+      "alwaysOutputData": true,
+      "credentials": {
+        "googleBigQueryOAuth2Api": {
+          "id": "WoJJ5V0vEjiKQMfU",
+          "name": "Google BigQuery - mrsitson3110"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "projectId": {
+          "__rl": true,
+          "value": "big-query-378507",
+          "mode": "list",
+          "cachedResultName": "Big Query",
+          "cachedResultUrl": "https://console.cloud.google.com/bigquery?project=big-query-378507"
+        },
+        "sqlQuery": "SELECT *\nFROM `big-query-378507.thelook_etl1.thelook_case_1_2`\nLIMIT 10\n",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleBigQuery",
+      "typeVersion": 2.1,
+      "position": [
+        -260,
+        -360
+      ],
+      "id": "94c2e30b-9563-4632-9f91-500b83369a53",
+      "name": "Preview Data",
+      "credentials": {
+        "googleBigQueryOAuth2Api": {
+          "id": "fl8GYthr4SpvTm7t",
+          "name": "Google BigQuery account - Nagato Yuki"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "projectId": {
+          "__rl": true,
+          "value": "flash-freehold-412006",
+          "mode": "list",
+          "cachedResultName": "My First Project",
+          "cachedResultUrl": "https://console.cloud.google.com/bigquery?project=flash-freehold-412006"
+        },
+        "sqlQuery": "SELECT *\nFROM `flash-freehold-412006.ga4_case_4_1.time_web`\nLIMIT 10 \n",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleBigQuery",
+      "typeVersion": 2.1,
+      "position": [
+        -260,
+        -180
+      ],
+      "id": "e88d769a-93d3-4837-a186-913aa3372aa2",
+      "name": "Preview Data1",
+      "credentials": {
+        "googleBigQueryOAuth2Api": {
+          "id": "WoJJ5V0vEjiKQMfU",
+          "name": "Google BigQuery - mrsitson3110"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "projectId": {
+          "__rl": true,
+          "value": "flash-freehold-412006",
+          "mode": "list",
+          "cachedResultName": "My First Project",
+          "cachedResultUrl": "https://console.cloud.google.com/bigquery?project=flash-freehold-412006"
+        },
+        "sqlQuery": "SELECT *\nFROM `flash-freehold-412006.ga4_case_4_1.event`\nLIMIT 10 ",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleBigQuery",
+      "typeVersion": 2.1,
+      "position": [
+        -260,
+        0
+      ],
+      "id": "86ab2c3e-f553-4a88-9321-1613ce8a5eee",
+      "name": "Preview Data2",
+      "credentials": {
+        "googleBigQueryOAuth2Api": {
+          "id": "WoJJ5V0vEjiKQMfU",
+          "name": "Google BigQuery - mrsitson3110"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "projectId": {
+          "__rl": true,
+          "value": "flash-freehold-412006",
+          "mode": "list",
+          "cachedResultName": "My First Project",
+          "cachedResultUrl": "https://console.cloud.google.com/bigquery?project=flash-freehold-412006"
+        },
+        "sqlQuery": "SELECT *\nFROM `flash-freehold-412006.ga4_case_4_1.purchase`\nLIMIT 10 ",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleBigQuery",
+      "typeVersion": 2.1,
+      "position": [
+        -260,
+        180
+      ],
+      "id": "e5b41268-1e11-4ede-9b28-d55e5b9ea033",
+      "name": "Preview Data3",
+      "credentials": {
+        "googleBigQueryOAuth2Api": {
+          "id": "WoJJ5V0vEjiKQMfU",
+          "name": "Google BigQuery - mrsitson3110"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "projectId": {
+          "__rl": true,
+          "value": "flash-freehold-412006",
+          "mode": "list",
+          "cachedResultName": "My First Project",
+          "cachedResultUrl": "https://console.cloud.google.com/bigquery?project=flash-freehold-412006"
+        },
+        "sqlQuery": "SELECT *\nFROM `flash-freehold-412006.ga4_case_4_1.cohort`\nLIMIT 10 ",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleBigQuery",
+      "typeVersion": 2.1,
+      "position": [
+        -260,
+        340
+      ],
+      "id": "b62c952d-c098-474a-96f9-70732e036746",
+      "name": "Preview Data4",
+      "credentials": {
+        "googleBigQueryOAuth2Api": {
+          "id": "WoJJ5V0vEjiKQMfU",
+          "name": "Google BigQuery - mrsitson3110"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "projectId": {
+          "__rl": true,
+          "value": "big-query-378507",
+          "mode": "list",
+          "cachedResultName": "Big Query",
+          "cachedResultUrl": "https://console.cloud.google.com/bigquery?project=big-query-378507"
+        },
+        "sqlQuery": "DROP TABLE IF EXISTS `big-query-378507.firebase_6.user`;\nCREATE OR REPLACE TABLE `big-query-378507.firebase_6.user`\nAS \nWITH traffic AS (\nSELECT\n  event_date,\n  user_pseudo_id AS user_id,\n  CASE WHEN\n  event_name = 'user_engagement'\n  THEN user_pseudo_id\n  END AS engaged_user_id, \n\n  traffic_source.source ||\"/\"|| traffic_source.medium AS traffic_name,\n  traffic_source.source AS traffic_source,\n  traffic_source.medium AS traffic_medium,\n  device.category AS device_category,\n  device.language AS device_language,\n  geo.country, geo.city,\n  app_info.id as info_id,\n  app_info.version as app_version,\n  app_info.install_store as install_store,\n  app_info.install_source as install_source,\n\n  (select value.string_value from unnest(event_params) where key ='firebase_screen_class') as screen_class,\n  event_name,\n  (select value.string_value from unnest(event_params) where key ='firebase_event_origin') as event_origin, \n  (SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'board') AS board, \n  COUNTIF(event_name = 'screen_view') as screen_view, \n\n  CASE WHEN \n  event_name LIKE '%add_to_cart%'\n  OR event_name LIKE '%add_to_wishlist%'\n  OR event_name LIKE '%app_store_subscription_convert%'\n  OR event_name LIKE '%app_store_subscription_renew%'\n  OR event_name LIKE '%app_update%'\n  OR event_name LIKE '%begin_checkout%'\n  OR event_name LIKE '%completed_5_levels%'\n  OR event_name LIKE '%first_open%'\n  OR event_name LIKE '%purchase%'\n  THEN 'TRUE'\n  ELSE 'FALSE' \n  END AS is_conversion,\n\n\n  FROM\n  `firebase-public-project.analytics_153293282.events_*`\nGROUP BY ALL\nORDER BY screen_view DESC \n) ,\ntime AS (\nSELECT\n  event_date,\n  user_pseudo_id AS user_id,\n   (select value.string_value from unnest(event_params) where key ='firebase_screen_class') as screen_class,\nsum((select value.int_value from unnest(event_params) where key = 'engagement_time_msec'))/1000 as time_on_page,\n(max(event_timestamp)-min(event_timestamp))/1000000 as time_on_session\nFROM\n  `firebase-public-project.analytics_153293282.events_*`\nGROUP BY ALL)\nSELECT t.*, u.time_on_page, u.time_on_session\nFROM traffic t\nLEFT JOIN time u ON u.user_id = t.user_id AND u.event_date = t.event_date AND t.screen_class = u.screen_class \nORDER BY t.screen_view DESC ",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleBigQuery",
+      "typeVersion": 2.1,
+      "position": [
+        -700,
+        -540
+      ],
+      "id": "3acc729f-1494-4ab2-a579-684fed724e6b",
+      "name": "user_firebase",
+      "alwaysOutputData": true,
+      "credentials": {
+        "googleBigQueryOAuth2Api": {
+          "id": "fl8GYthr4SpvTm7t",
+          "name": "Google BigQuery account - Nagato Yuki"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "projectId": {
+          "__rl": true,
+          "value": "big-query-378507",
+          "mode": "list",
+          "cachedResultName": "Big Query",
+          "cachedResultUrl": "https://console.cloud.google.com/bigquery?project=big-query-378507"
+        },
+        "sqlQuery": "DROP TABLE IF EXISTS `big-query-378507.firebase_6.event`;\nCREATE OR REPLACE TABLE `big-query-378507.firebase_6.event`\nAS \nSELECT\n  event_date,\n  user_pseudo_id AS user_id,\n  CASE WHEN\n  event_name = 'user_engagement'\n  THEN user_pseudo_id\n  END AS engaged_user_id,event_name,\n  traffic_source.source ||\"/\"|| traffic_source.medium AS traffic_name,\n  traffic_source.source AS traffic_source,\n  traffic_source.medium AS traffic_medium,\n  device.category AS device_category,\n  device.language AS device_language,\n  geo.country, geo.city,\n  app_info.id as info_id,\n  app_info.version as app_version,\n  app_info.install_store as install_store,\n  app_info.install_source as install_source,\n  (select value.string_value from unnest(event_params) where key ='firebase_event_origin') as event_origin, \n  (SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'board') AS board,\n  CASE WHEN \n  event_name LIKE '%add_to_cart%'\n  OR event_name LIKE '%add_to_wishlist%'\n  OR event_name LIKE '%app_store_subscription_convert%'\n  OR event_name LIKE '%app_store_subscription_renew%'\n  OR event_name LIKE '%app_update%'\n  OR event_name LIKE '%begin_checkout%'\n  OR event_name LIKE '%completed_5_levels%'\n  OR event_name LIKE 'first_open%'\n  OR event_name LIKE '%level_start%'\n  OR event_name LIKE '%level_complete%'\n  OR event_name LIKE 'level_end_quickplay%'\n  OR event_name LIKE '%purchase%'\n  THEN 'TRUE'\n  ELSE 'FALSE' \n  END AS is_conversion,\n   FROM\n  `firebase-public-project.analytics_153293282.events_*`",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleBigQuery",
+      "typeVersion": 2.1,
+      "position": [
+        -700,
+        -700
+      ],
+      "id": "5ac4ba7a-3610-4568-9ba8-0f74b1b9e317",
+      "name": "event_firebase",
+      "alwaysOutputData": true,
+      "credentials": {
+        "googleBigQueryOAuth2Api": {
+          "id": "fl8GYthr4SpvTm7t",
+          "name": "Google BigQuery account - Nagato Yuki"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "projectId": {
+          "__rl": true,
+          "value": "big-query-378507",
+          "mode": "list",
+          "cachedResultName": "Big Query",
+          "cachedResultUrl": "https://console.cloud.google.com/bigquery?project=big-query-378507"
+        },
+        "sqlQuery": "DROP TABLE IF EXISTS `big-query-378507.firebase_6.engagement`;\nCREATE OR REPLACE TABLE `big-query-378507.firebase_6.engagement`\nAS \nSELECT\n  event_date,\n  user_pseudo_id AS user_id,\n  CASE WHEN\n  event_name = 'user_engagement'\n  THEN user_pseudo_id\n  END AS engaged_user_id,\n  traffic_source.source ||\"/\"|| traffic_source.medium AS traffic_name,\n  traffic_source.source AS traffic_source,\n  traffic_source.medium AS traffic_medium,\n  device.category AS device_category,\n  device.language AS device_language,\n  geo.country, geo.city,\n  app_info.id as info_id,\n  app_info.version as app_version,\n  app_info.install_store as install_store,\n  app_info.install_source as install_source,\n  (select value.string_value from unnest(event_params) where key ='firebase_event_origin') as event_origin, \n  (SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'board') AS board,\n\n  /* Level Analysis */\n  (select value.double_value from unnest(event_params) where key ='level') as level_name,\n  (select value.double_value from unnest(event_params) where key ='score') as score,\n  /* Virtual Currency Analysis */ \n  (select value.string_value from unnest(event_params) where key ='virtual_currency_name') as virtual_currency_name,\n  (select value.string_value from unnest(event_params) where key ='item_name') as item_name,\n\n  /* In app purchase Analysis */ \n   (select value.string_value from unnest(event_params) where key ='product_id') as product_id,\n   (select value.int_value from unnest(event_params) where key ='quantity') as quantity,\n   event_value_in_usd as price,\n   (select value.int_value from unnest(event_params) where key ='quantity')  * event_value_in_usd as revenue_usd,\n\n  /* In app Ads and extra step after watching ads + Play type */ \n  (select value.string_value from unnest(user_properties) where key ='ad_frequency') as ad_frequency,\n  (select value.string_value from unnest(user_properties) where key ='initial_extra_steps') as initial_extra_steps,\n  CASE WHEN \n  (select value.string_value from unnest(user_properties) where key ='plays_quickplay') = 'true'\n  THEN 'TRUE' ELSE 'FALSE'\n  END AS plays_quickplay,\n  CASE WHEN\n  (select value.string_value from unnest(user_properties) where key ='plays_progressive') = 'true'\n  THEN 'TRUE' ELSE 'FALSE'\n  END AS plays_progressive,\n\n  /* Firebase experience group count */ \n  CASE \n      WHEN (SELECT value.string_value FROM UNNEST(user_properties) WHERE key ='firebase_exp_1') >= '1' THEN 'firebase_exp_1'\n      WHEN (SELECT value.string_value FROM UNNEST(user_properties) WHERE key ='firebase_exp_3') >= '1' THEN 'firebase_exp_3'\n      WHEN (SELECT value.string_value FROM UNNEST(user_properties) WHERE key ='firebase_exp_4') >= '1' THEN 'firebase_exp_4'\n      WHEN (SELECT value.string_value FROM UNNEST(user_properties) WHERE key ='firebase_exp_5') >= '1' THEN 'firebase_exp_5'\n      WHEN (SELECT value.string_value FROM UNNEST(user_properties) WHERE key ='firebase_exp_7') >= '1' THEN 'firebase_exp_7'\n      ELSE 'no_exp'\n  END AS firebase_exp_group,\n  \n  \n   FROM\n  `firebase-public-project.analytics_153293282.events_*`",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleBigQuery",
+      "typeVersion": 2.1,
+      "position": [
+        -700,
+        -860
+      ],
+      "id": "3d812ee2-62f6-44cd-832b-ba37d87f579a",
+      "name": "engagement_firebase",
+      "alwaysOutputData": true,
+      "credentials": {
+        "googleBigQueryOAuth2Api": {
+          "id": "fl8GYthr4SpvTm7t",
+          "name": "Google BigQuery account - Nagato Yuki"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "projectId": {
+          "__rl": true,
+          "value": "big-query-378507",
+          "mode": "list",
+          "cachedResultName": "Big Query",
+          "cachedResultUrl": "https://console.cloud.google.com/bigquery?project=big-query-378507"
+        },
+        "sqlQuery": "SELECT COUNT(*)\nFROM `big-query-378507.firebase_6.user`\n",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleBigQuery",
+      "typeVersion": 2.1,
+      "position": [
+        -480,
+        -540
+      ],
+      "id": "a69cfabd-d198-4934-9825-67ed4cf51508",
+      "name": "Check record5",
+      "alwaysOutputData": true,
+      "credentials": {
+        "googleBigQueryOAuth2Api": {
+          "id": "fl8GYthr4SpvTm7t",
+          "name": "Google BigQuery account - Nagato Yuki"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "projectId": {
+          "__rl": true,
+          "value": "big-query-378507",
+          "mode": "list",
+          "cachedResultName": "Big Query",
+          "cachedResultUrl": "https://console.cloud.google.com/bigquery?project=big-query-378507"
+        },
+        "sqlQuery": "SELECT COUNT(*)\nFROM `big-query-378507.firebase_6.event`\n",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleBigQuery",
+      "typeVersion": 2.1,
+      "position": [
+        -480,
+        -700
+      ],
+      "id": "148fccdc-7d18-48b1-88ed-4cdd9f7d5602",
+      "name": "Check record6",
+      "alwaysOutputData": true,
+      "credentials": {
+        "googleBigQueryOAuth2Api": {
+          "id": "fl8GYthr4SpvTm7t",
+          "name": "Google BigQuery account - Nagato Yuki"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "projectId": {
+          "__rl": true,
+          "value": "big-query-378507",
+          "mode": "list",
+          "cachedResultName": "Big Query",
+          "cachedResultUrl": "https://console.cloud.google.com/bigquery?project=big-query-378507"
+        },
+        "sqlQuery": "SELECT COUNT(*)\nFROM `big-query-378507.firebase_6.engagement`\n",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleBigQuery",
+      "typeVersion": 2.1,
+      "position": [
+        -480,
+        -860
+      ],
+      "id": "17fc3577-0648-40c7-84e1-f612b5b8b049",
+      "name": "Check record7",
+      "alwaysOutputData": true,
+      "credentials": {
+        "googleBigQueryOAuth2Api": {
+          "id": "fl8GYthr4SpvTm7t",
+          "name": "Google BigQuery account - Nagato Yuki"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "projectId": {
+          "__rl": true,
+          "value": "big-query-378507",
+          "mode": "list",
+          "cachedResultName": "Big Query",
+          "cachedResultUrl": "https://console.cloud.google.com/bigquery?project=big-query-378507"
+        },
+        "sqlQuery": "SELECT *\nFROM `big-query-378507.firebase_6.user`\nLIMIT 10\n",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleBigQuery",
+      "typeVersion": 2.1,
+      "position": [
+        -260,
+        -540
+      ],
+      "id": "e71bade9-87ca-47eb-bfb7-a5c4f4e73691",
+      "name": "Preview Data5",
+      "credentials": {
+        "googleBigQueryOAuth2Api": {
+          "id": "fl8GYthr4SpvTm7t",
+          "name": "Google BigQuery account - Nagato Yuki"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "projectId": {
+          "__rl": true,
+          "value": "big-query-378507",
+          "mode": "list",
+          "cachedResultName": "Big Query",
+          "cachedResultUrl": "https://console.cloud.google.com/bigquery?project=big-query-378507"
+        },
+        "sqlQuery": "SELECT *\nFROM `big-query-378507.firebase_6.event`\nLIMIT 10\n",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleBigQuery",
+      "typeVersion": 2.1,
+      "position": [
+        -260,
+        -700
+      ],
+      "id": "e6aae383-b93c-473b-83d2-40e840829eba",
+      "name": "Preview Data6",
+      "credentials": {
+        "googleBigQueryOAuth2Api": {
+          "id": "fl8GYthr4SpvTm7t",
+          "name": "Google BigQuery account - Nagato Yuki"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "projectId": {
+          "__rl": true,
+          "value": "big-query-378507",
+          "mode": "list",
+          "cachedResultName": "Big Query",
+          "cachedResultUrl": "https://console.cloud.google.com/bigquery?project=big-query-378507"
+        },
+        "sqlQuery": "SELECT *\nFROM `big-query-378507.firebase_6.engagement`\nLIMIT 10\n",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleBigQuery",
+      "typeVersion": 2.1,
+      "position": [
+        -260,
+        -860
+      ],
+      "id": "42a37e83-8d49-4add-8ca3-405535c97316",
+      "name": "Preview Data7",
+      "credentials": {
+        "googleBigQueryOAuth2Api": {
+          "id": "fl8GYthr4SpvTm7t",
+          "name": "Google BigQuery account - Nagato Yuki"
+        }
+      }
+    },
+    {
+      "parameters": {},
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        -980,
+        -160
+      ],
+      "id": "2b9fe8c1-d596-4a5a-bd02-ca1d6dfea470",
+      "name": "When clicking ‘Test workflow’"
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "thelooker_dataset": {
+      "main": [
+        [
+          {
+            "node": "Check record",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "time_web_GA4": {
+      "main": [
+        [
+          {
+            "node": "Check record1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "event_GA4": {
+      "main": [
+        [
+          {
+            "node": "Check record2",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "cohort_GA4": {
+      "main": [
+        [
+          {
+            "node": "Check record4",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check record": {
+      "main": [
+        [
+          {
+            "node": "Preview Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "purchase_GA4": {
+      "main": [
+        [
+          {
+            "node": "Check record3",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check record1": {
+      "main": [
+        [
+          {
+            "node": "Preview Data1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check record2": {
+      "main": [
+        [
+          {
+            "node": "Preview Data2",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check record3": {
+      "main": [
+        [
+          {
+            "node": "Preview Data3",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check record4": {
+      "main": [
+        [
+          {
+            "node": "Preview Data4",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "user_firebase": {
+      "main": [
+        [
+          {
+            "node": "Check record5",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check record5": {
+      "main": [
+        [
+          {
+            "node": "Preview Data5",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "event_firebase": {
+      "main": [
+        [
+          {
+            "node": "Check record6",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check record6": {
+      "main": [
+        [
+          {
+            "node": "Preview Data6",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "engagement_firebase": {
+      "main": [
+        [
+          {
+            "node": "Check record7",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check record7": {
+      "main": [
+        [
+          {
+            "node": "Preview Data7",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "When clicking ‘Test workflow’": {
+      "main": [
+        [
+          {
+            "node": "engagement_firebase",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "event_firebase",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "thelooker_dataset",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "time_web_GA4",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "event_GA4",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "purchase_GA4",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "cohort_GA4",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "versionId": "b3172095-e962-41ea-845a-e24e9d4ff13e",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "5876aad146725ee63adedd4cc2231f531eb75b2ab005400c377cbc0d00e61c53"
+  },
+  "id": "4gv6ftHSiJfSlQMK",
+  "tags": [
+    {
+      "createdAt": "2025-02-12T09:23:05.886Z",
+      "updatedAt": "2025-02-12T09:23:05.886Z",
+      "id": "GUcSCqHaizn4S7hB",
+      "name": "Self-Building"
+    },
+    {
+      "createdAt": "2025-02-13T03:28:21.710Z",
+      "updatedAt": "2025-02-13T03:28:21.710Z",
+      "id": "bNbQa40qz66P5z4v",
+      "name": "Big Query"
+    }
+  ]
+}
